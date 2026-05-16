@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-import gdacs
+import backend.gdacs as gdacs
 
 # Add location
 class GDACSEventModel(BaseModel):
