@@ -136,6 +136,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Node dependencies
+frontend/node_modules/
+
+# Local database
+backend/disasters.db
+
 # Spyder project settings
 .spyderproject
 .spyproject

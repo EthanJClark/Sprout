@@ -1,10 +1,26 @@
 import json
 import sqlite3
-from typing import Any, Optional
+from typing import Optional
+from typing_extensions import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, BeforeValidator
 
-import backend.gdacs as gdacs
+import gdacs
+
+EVENT_TYPE_MAP = {
+    "WF": "wildfire",
+    "FL": "flood",
+    "TC": "cyclone",
+    "EQ": "earthquake",
+    "VO": "volcano",
+    "DR": "drought",
+    "LS": "landslide",
+    "ST": "storm",
+}
+
+extract_population = BeforeValidator(
+    lambda v: v.get('value', 0) if isinstance(v, dict) else (v or 0)
+)
 
 # Add location
 class GDACSEventModel(BaseModel):
@@ -17,9 +33,37 @@ class GDACSEventModel(BaseModel):
     lat: float = Field(..., ge=-90, le=90, validation_alias="geo_lat")
     long: float = Field(..., ge=-180, le=180, validation_alias="geo_long")
     date: str = Field(..., validation_alias="gdacs_fromdate")
+    population: Annotated[int, extract_population]  = Field(default= 0, validation_alias="gdacs_population")
+    location: str = Field(..., validation_alias="gdacs_country")
     raw_payload: dict
     links: Optional[list] = []
 
+def map_category(raw: dict) -> str:
+    event_type = str(raw.get("gdacs_eventtype") or "")
+    return EVENT_TYPE_MAP.get(event_type, "storm")
+
+def map_status(raw: dict) -> str:
+    return "Active" if str(raw.get("gdacs_iscurrent", "")).lower() == "true" else "Resolved"
+
+def map_source(raw: dict) -> str:
+    return (raw.get("gdacs_resource") or {}).get("source") or "GDACS"
+
+def map_source_url(raw: dict) -> str:
+    if raw.get("link"):
+        return raw["link"]
+    for link in raw.get("links", []):
+        if link.get("rel") == "alternate" and link.get("href"):
+            return link["href"]
+    return ""
+
+def map_severity_score(raw: dict) -> int:
+    sev = raw.get("gdacs_severity") or {}
+    try:
+        value = float(sev.get("value", 0))
+    except Exception:
+        value = 0
+    # Example normalization for wildfire hectares (adjust as needed)
+    return min(100, max(0, round((value / 10000) * 100)))
 
 def create_table(cursor):
     cursor.execute("""
@@ -33,7 +77,17 @@ def create_table(cursor):
             lat REAL,
             long REAL,
             date TEXT,
-            raw_payload TEXT
+            population REAL,
+            location TEXT,
+            raw_payload TEXT,
+            category TEXT,
+            status TEXT,
+            severity_score REAL,
+            affected TEXT,
+            source TEXT,
+            source_url TEXT,
+            lng REAL,
+            description TEXT
         )
     """)
 
@@ -48,15 +102,34 @@ def sync_gdacs(raw_feed: list):
             item["raw_payload"] = item.copy()
 
             event = GDACSEventModel(**item)
+            raw = event.raw_payload
+            category = map_category(raw)
+            status = map_status(raw)
+            source = map_source(raw)
+            source_url = map_source_url(raw)
+            severity_score = map_severity_score(raw)
+            affected = f"~{event.population} people"
+            description = event.summary
+            lng = event.long
 
             cursor.execute(
                 """
                     INSERT INTO disaster_cache
-                    (event_id, episode_id, title, level, severity, summary, lat, long, date, raw_payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (event_id, episode_id, title, level, severity, summary, lat, long, date, location, population, raw_payload,
+                     category, status, severity_score, affected, source, source_url, lng, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(event_id) DO UPDATE SET
                         severity = excluded.severity,
-                        raw_payload = excluded.raw_payload
+                        population = excluded.population,
+                        raw_payload = excluded.raw_payload,
+                        category = excluded.category,
+                        status = excluded.status,
+                        severity_score = excluded.severity_score,
+                        affected = excluded.affected,
+                        source = excluded.source,
+                        source_url = excluded.source_url,
+                        lng = excluded.lng,
+                        description = excluded.description
                 """,
                 (
                     event.event_id,
@@ -68,7 +141,17 @@ def sync_gdacs(raw_feed: list):
                     event.lat,
                     event.long,
                     event.date,
+                    event.location,
+                    event.population,
                     json.dumps(event.raw_payload),
+                    category,
+                    status,
+                    severity_score,
+                    affected,
+                    source,
+                    source_url,
+                    lng,
+                    description,
                 ),
             )
 
