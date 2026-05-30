@@ -1,4 +1,4 @@
-# Earth Pulse — GDAC Disaster Tracker
+# SPROUT — GDAC Disaster Tracker
 
 A real-time climate disaster monitoring dashboard with a 3D interactive globe.
 
